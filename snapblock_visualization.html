@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Snap Block Tolerance Visualization</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@1.4.0"></script>
+
+  <style>
+    body {
+      font-family: Arial;
+      margin: 20px;
+    }
+
+    h1 {
+      text-align: center;
+    }
+
+    .controls {
+      margin: 20px;
+      text-align: center;
+    }
+
+    input {
+      width: 90px;
+      padding: 5px;
+      font-size: 16px;
+      margin: 5px;
+    }
+
+    .container {
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      gap: 10px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .left-panel {
+      flex: 3;
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .right-panel {
+      flex: 1;
+      max-width: 260px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .chart-wrapper {
+      width: 100%;
+      max-width: 900px;
+      aspect-ratio: 16 / 9;
+    }
+
+    canvas {
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    /* -------- INSTRUCTION SLIDER -------- */
+    .instruction-slider img {
+      width: 100%;
+      border: 1px solid #ccc;
+    }
+
+    .slider-buttons {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 5px;
+    }
+
+    .slider-buttons button {
+      width: 48%;
+      padding: 5px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    #rejectionStats {
+      font-size: 14px;
+      text-align: left;
+      width: 100%;
+      margin-top: 10px;
+    }
+
+    .cube {
+      display: inline-block;
+      width: 12px;
+      height: 12px;
+      margin-right: 6px;
+      border: 1px solid #333;
+      vertical-align: middle;
+    }
+
+    @media (max-width: 900px) {
+      .container {
+        flex-direction: column;
+        align-items: center;
+      }
+
+      .left-panel {
+        justify-content: center;
+      }
+
+      .right-panel {
+        max-width: 400px;
+        align-items: center;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <h1>Snap Block Tolerance Visualization</h1>
+
+  <div class="controls">
+    <label>
+      Nominal:
+      <input id="nominalInput" type="number" step="0.01">
+    </label>
+
+    <label>
+      ± Tolerance:
+      <input id="tolInput" type="number" step="0.01">
+    </label>
+
+    <br>
+
+    <label>
+      <input type="checkbox" id="filterToggle">
+      Hide blocks outside tolerance range
+    </label>
+  </div>
+
+  <div class="container">
+
+    <!-- LEFT -->
+    <div class="left-panel">
+      <div class="chart-wrapper">
+        <canvas id="chart"></canvas>
+      </div>
+    </div>
+
+    <!-- RIGHT -->
+    <div class="right-panel">
+      <h3>Instructions</h3>
+
+      <!-- 🔥 SLIDESHOW -->
+      <div class="instruction-slider">
+        <img id="instructionImg" src="INS1.png">
+
+        <div class="slider-buttons">
+          <button onclick="prevImg()">◀</button>
+          <button onclick="nextImg()">▶</button>
+        </div>
+      </div>
+
+      <div id="rejectionStats"></div>
+    </div>
+
+  </div>
+
+  <script>
+    const instructionImages = [
+      "INS1.png",
+      "INS2.png",
+      "INS3.png",
+      "INS4.png",
+      "INS5.png"
+    ];
+
+    let currentImg = 0;
+
+    function updateInstructionImage() {
+      document.getElementById("instructionImg").src =
+        instructionImages[currentImg];
+    }
+
+    function nextImg() {
+      currentImg = (currentImg + 1) % instructionImages.length;
+      updateInstructionImage();
+    }
+
+    function prevImg() {
+      currentImg =
+        (currentImg - 1 + instructionImages.length) %
+        instructionImages.length;
+      updateInstructionImage();
+    }
+
+    const url = "https://opensheet.elk.sh/1xqgQ4MpDayGOcjrWhQuuSGT4wWt9tOUiGqqxHzeV2RI/snapblock_tolerance_form";
+
+    let chart;
+
+    const COLOR_KEY = "Q1: What is the color of your block?";
+    const BLOCK_KEYS = [
+      "Block 1 (in mm)", "Block 2 (in mm)", "Block 3 (in mm)",
+      "Block 4 (in mm)", "Block 5 (in mm)", "Block 6 (in mm)",
+      "Block 7 (in mm)", "Block 8 (in mm)", "Block 9 (in mm)",
+      "Block 10 (in mm)"
+    ];
+
+    const colorMap = {
+      "Red": "#ff0000",
+      "Yellow": "#f2c300",
+      "Green": "#006400",
+      "Brown": "#8B4513",
+      "White": "#808080",
+      "Light Green": "#32CD32",
+      "Blue": "#0000ff",
+      "Pink": "#ff69b4",
+      "Orange": "#ffa500",
+      "Black": "#000000"
+    };
+
+    function gaussian(x, mu, sigma) {
+      return (1 / (sigma * Math.sqrt(2 * Math.PI))) *
+        Math.exp(-0.5 * Math.pow((x - mu) / sigma, 2));
+    }
+
+    function mean(arr) {
+      return arr.reduce((a, b) => a + b, 0) / arr.length;
+    }
+
+    function std(arr, mu) {
+      return Math.sqrt(arr.reduce((a, b) => a + Math.pow(b - mu, 2), 0) / arr.length);
+    }
+
+    function updateScaling() {
+
+      let visibleValues = [];
+      let globalYmax = 0;
+
+      chart.data.datasets.forEach((ds, i) => {
+
+        if (chart.isDatasetVisible(i)) {
+
+          visibleValues.push(...ds.rawValues);
+
+          ds.data.forEach(p => {
+            if (p && p.y !== null && p.y > globalYmax) {
+              globalYmax = p.y;
+            }
+          });
+        }
+      });
+
+      if (visibleValues.length === 0) return;
+
+      const xmin = Math.min(...visibleValues) - 0.10;
+      const xmax = Math.max(...visibleValues) + 0.10;
+
+      chart.options.scales.x.min = xmin;
+      chart.options.scales.x.max = xmax;
+      chart.options.scales.y.max = globalYmax + 15;
+
+      const nominal = Number(document.getElementById("nominalInput").value);
+      const tol = Number(document.getElementById("tolInput").value);
+
+      let annotations = {};
+
+      if (!isNaN(nominal)) {
+
+        annotations.nominalLine = {
+          type: 'line',
+          xMin: nominal,
+          xMax: nominal,
+          borderColor: 'black',
+          borderWidth: 2
+        };
+
+        if (!isNaN(tol)) {
+
+          const lower = nominal - tol;
+          const upper = nominal + tol;
+
+          annotations.toleranceBox = {
+            type: 'box',
+            xMin: lower,
+            xMax: upper,
+            backgroundColor: 'rgba(0,0,0,0.1)'
+          };
+
+          annotations.lowerLine = {
+            type: 'line',
+            xMin: lower,
+            xMax: lower,
+            borderDash: [6, 6],
+            borderColor: 'black'
+          };
+
+          annotations.upperLine = {
+            type: 'line',
+            xMin: upper,
+            xMax: upper,
+            borderDash: [6, 6],
+            borderColor: 'black'
+          };
+        }
+      }
+
+      chart.options.plugins.annotation.annotations = annotations;
+      chart.update();
+    }
+
+    function buildChart() {
+
+      fetch(url)
+        .then(res => res.json())
+        .then(data => {
+
+          let grouped = {};
+          let rejectionStats = {};
+
+          data.forEach(row => {
+
+            const color = row[COLOR_KEY];
+            if (!color) return;
+
+            if (!grouped[color]) grouped[color] = [];
+
+            BLOCK_KEYS.forEach(key => {
+              let val = Number(row[key]);
+              if (!isNaN(val) && val > 7 && val < 10) {
+                grouped[color].push(val);
+              }
+            });
+          });
+
+          let datasets = [];
+
+          const nominal = Number(document.getElementById("nominalInput").value);
+          const tol = Number(document.getElementById("tolInput").value);
+          const filterOn = document.getElementById("filterToggle").checked;
+
+          let lower = nominal - tol;
+          let upper = nominal + tol;
+
+          Object.keys(grouped).forEach(color => {
+
+            let values = grouped[color];
+            if (values.length < 3) return;
+
+            let mu = mean(values);
+            let sigma = std(values, mu);
+
+            let rejected = 0;
+
+            if (filterOn && !isNaN(nominal) && !isNaN(tol)) {
+              values.forEach(v => {
+                if (v < lower || v > upper) rejected++;
+              });
+            }
+
+            rejectionStats[color] = rejected;
+
+            let dataPoints = [];
+
+            for (let x = mu - 0.5; x <= mu + 0.5; x += 0.001) {
+
+              let y = gaussian(x, mu, sigma);
+
+              if (filterOn && !isNaN(nominal) && !isNaN(tol)) {
+                if (x < lower || x > upper) {
+                  dataPoints.push({ x: x, y: null });
+                  continue;
+                }
+              }
+
+              dataPoints.push({ x: x, y: y });
+            }
+
+            datasets.push({
+              label: color,
+              rawValues: values,
+              data: dataPoints,
+              borderColor: colorMap[color] || "black",
+              borderWidth: 2,
+              fill: false,
+              tension: 0.25,
+              pointRadius: 0
+            });
+          });
+
+          let statsHTML = "<b>Rejected blocks:</b><br>";
+
+          Object.keys(rejectionStats).forEach(color => {
+
+            const cubeColor = colorMap[color] || "#000";
+
+            statsHTML += `
+              <div>
+                <span class="cube" style="background:${cubeColor}"></span>
+                ${color.toLowerCase()} : ${rejectionStats[color]} blocks
+              </div>
+            `;
+          });
+
+          document.getElementById("rejectionStats").innerHTML =
+            filterOn ? statsHTML : "";
+
+          if (chart) chart.destroy();
+
+          chart = new Chart(document.getElementById("chart"), {
+            type: "line",
+            data: { datasets: datasets },
+            options: {
+              responsive: true,
+              parsing: false,
+              plugins: {
+                legend: { position: "top" },
+                annotation: { annotations: {} }
+              },
+              scales: {
+                x: {
+                  type: "linear",
+                  ticks: {
+                    callback: v => v.toFixed(2)
+                  }
+                },
+                y: { beginAtZero: true }
+              }
+            }
+          });
+
+          updateScaling();
+        });
+    }
+
+    document.getElementById("filterToggle").onchange = buildChart;
+    document.getElementById("nominalInput").oninput = buildChart;
+    document.getElementById("tolInput").oninput = buildChart;
+
+    buildChart();
+  </script>
+
+</body>
+
+</html>
